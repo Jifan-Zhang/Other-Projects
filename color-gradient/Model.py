@@ -1,6 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras import Model
 import tensorflow.keras.backend as K
+import numpy as np
+from Generator import Generate
 
 class Model_builder:
     """
@@ -8,7 +10,7 @@ class Model_builder:
     The instance variable remembers the layer structure.
         input_shape: The image shape CNN trains on
     """
-    def __init__(self, input_shape = (512,512,3), output_shape = (512,512,3)):
+    def __init__(self, input_shape = (1024,1024,3), output_shape = (512,512,3)):
         self.input_shape = input_shape
         self.output_shape = output_shape
         self.blocks = []
@@ -61,41 +63,59 @@ class Model_builder:
     def build(self, monitor, lbd):
         """
         Create model
-            monitor: list of unique positive integers. Indexing on which layer outputs to monitor the style.
+            monitor: list of unique positive integers. Indexing on which intermediate layer outputs to monitor the style (except the last layer).
             lbd: list of integers(with the same length as monitor) and the sum of this vector should be 1.
                 lambda corresponds to the style loss.
         """
         if(len(monitor) != len(lbd)):
             raise RuntimeError("The lengths of monitor and lambda are not the same.")
+        
+        # The last layer loss accounts for highest (0.5) loss weight.
+        lbd = [0.5*x for x in lbd] + [0.5]
         self.lbd = lbd
         outs=[]
         for i in range(len(self.blocks)):
             if i in monitor:
                 outs.append(self.blocks[i])
                 print(f"Monitoring -> {self.blocks[i].name}.")
-        model = Model(inputs=self.blocks[0],outputs=outs)
-        return model
 
-    def get_loss(self, y_true, y_pred):
+        outs.append(self.blocks[-1])
+        self.model = Model(inputs=self.blocks[0],outputs=outs)
+        return self.model
+
+    def __loss__(self, y_true, y_pred):
         """
-        Implement Style Loss. Return one scalar,
+        Implement Style Loss. Method returns a tf scalar.
         """
-        loss = 0
+        loss = tf.Variable(0, dtype=tf.float32)
         count = 0
         for pred,true in zip(y_pred,y_true):
-            n_sample = y_pred.shape[0]
-            width = y_pred.shape[1]
-            height = y_pred.shape[2]
-            n_channel = y_pred.shape[3]
-            pred_gram = tf.transpose(y_pred,[0,3,2,1])
+            n_sample = pred.shape[0]
+            width = pred.shape[1]
+            height = pred.shape[2]
+            n_channel = pred.shape[3]
+            pred_gram = tf.transpose(pred,[0,3,2,1])
             pred_gram = tf.reshape(pred_gram, (n_sample,n_channel,width*height)) # Flatten last 2 dims for matmul
             pred_gram = tf.matmul(pred_gram, tf.transpose(pred_gram, [0,2,1]))
             
-            true_gram = tf.transpose(y_pred,[0,3,2,1])
+            true_gram = tf.transpose(true,[0,3,2,1])
             true_gram = tf.reshape(true_gram, (n_sample,n_channel,width*height))
             true_gram = tf.matmul(true_gram, tf.transpose(true_gram, [0,2,1]))
             
-            layer_loss = tf.reduce_sum(tf.matmul(pred_gram, true_gram))
-            loss += layer_loss*self.lbd[count]
+            layer_loss = tf.reduce_sum(tf.math.square(pred_gram-true_gram))/(2*width*height)**2
+            loss = loss + layer_loss*self.lbd[count]
             count += 1
-        return tf.matmul(loss, tf.transpose(self.lbd))
+        return loss
+
+    def __get_pred__(self, path="color-gradient.jpg"):
+        new_img = next(Generate(path, self.input_shape))
+        y_true = self.model(tf.expand_dims(new_img,axis=0))
+        img_input = tf.random.uniform(minval=-1, maxval=1, shape=(1,)+(self.input_shape),dtype=tf.float32)
+        y_pred = self.model(img_input)
+        return (y_true,y_pred)
+
+    def get_gradient(self):
+        with tf.GradientTape() as tape:
+            loss = self.__loss__(*self.__get_pred__())
+            self.__current_loss__ = loss
+        return tape.gradient(loss, self.model.trainable_weights)
