@@ -9,7 +9,7 @@ class Generate(Iterator):
         path: absolute path to the input RGB image
         out_shape: training image (width, height)
     """
-    def __init__(self, path, out_shape=(512,512)):
+    def __init__(self, path, out_shape=(1024,1024)):
         self.path = path
         self.out_shape = out_shape
         self.input = np.array(Image.open(path))
